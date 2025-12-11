@@ -103,12 +103,6 @@ class ModelWithTemporalPrediction(nn.Module):
             hidden_channels=pred_hidden_channels
         )
 
-        # 新增：用于修复MSE
-        # =================【修改 1：在此处添加定义】=================
-        self.pred_bn = nn.BatchNorm2d(base_channel * 4)
-        bn_init(self.pred_bn, 1)  # 别忘了初始化，否则训练初期不稳定
-        # ==========================================================
-
         if drop_out:
             self.drop_out = nn.Dropout(drop_out)
         else:
