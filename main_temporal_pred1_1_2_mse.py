@@ -1,11 +1,8 @@
 #!/usr/bin/env python
 """
-
-在原main_temporal_pred1_1_2.py基础上
-修改infonce部分
-使其支持使用负责负样本
-代码已改好，还未进行实验
-
+训练脚本：支持时序预测损失
+在原main.py基础上修改train函数，接收额外返回值并计算预测损失
+卷积预测，让模型在关节级别上进行时序预测 work10
 """
 from __future__ import print_function
 
@@ -206,21 +203,13 @@ def get_parser():
         help='decay rate for learning rate')
     parser.add_argument('--warm_up_epoch', type=int, default=0)
 
-    # 1_1新增：时序预测损失相关参数
+    # 新增：时序预测损失相关参数
     parser.add_argument(
         '--pred-loss-type',
         type=str,
         default='cosine',
-        choices=['mse', 'cosine', 'infonce', 'smooth_l1'],  # 1_1_2新增：选项'infonce', 'smooth_l1'
+        choices=['mse', 'cosine'],
         help='type of prediction loss: mse or cosine')
-
-    # 1_1_2新增：InfoNCE 的温度系数
-    parser.add_argument(
-        '--pred-temp',
-        type=float,
-        default=0.07,
-        help='temperature for InfoNCE loss')
-
     parser.add_argument(
         '--pred-loss-weight',
         type=float,
@@ -405,13 +394,9 @@ class Processor():
         Returns:
             pred_loss: 预测损失
         """
-
         if self.arg.pred_loss_type == 'mse':
             # MSE Loss: 最小化误差
             pred_loss = F.mse_loss(x_pred, x_future)
-        elif self.arg.pred_loss_type == 'smooth_l1':   # 1_1_2新增
-            # Smooth L1 Loss (Huber Loss)
-            pred_loss = F.smooth_l1_loss(x_pred, x_future)
         elif self.arg.pred_loss_type == 'cosine':
             # Cosine Similarity Loss: 最大化相似度
             # 将特征展平为 (N*M*T/2*V, C) 计算余弦相似度
@@ -420,46 +405,6 @@ class Processor():
             # cosine_similarity返回[-1, 1]，我们希望最大化相似度，所以用1-similarity作为损失
             cos_sim = F.cosine_similarity(x_pred_flat, x_future_flat, dim=1)
             pred_loss = 1.0 - cos_sim.mean()
-        elif self.arg.pred_loss_type == 'infonce':   # 1_1_2新增InfoNCE Loss
-            # === 1. 空间池化 (Spatial Pooling) ===
-            # 每一帧是一个语义整体，所以把 V (Joints) 维度平均掉
-            # 输入: (N*M, C, T, V) -> 输出: (N*M, C, T)
-            x_pred_pooled = x_pred.mean(dim=3)
-            x_future_pooled = x_future.mean(dim=3)
-            # === 2. 稀疏采样 (Dilated Sampling) ===
-            # [关键] 针对 TCN 的优化：
-            # TCN 的相邻帧重叠太严重，互为负样本太难了（False Negative 风险）。
-            # 像 DPC 论文中一样，我们不取所有帧，而是每隔一段取一帧。
-            # step=2 或 3 可以让相邻样本的差异更明显，形成“合理的”困难样本。
-            step = 2
-            x_pred_pooled = x_pred_pooled[:, :, ::step]
-            x_future_pooled = x_future_pooled[:, :, ::step]
-            # === 3. 构造 Dense Samples (把 T 混入 Batch) ===
-            NM, C, T_new = x_pred_pooled.size()
-            # 展平操作：把 (Batch, C, Time) 变成 (Batch * Time, C)
-            # 此时，effective_batch_size 变大了 T_new 倍
-            q = x_pred_pooled.permute(0, 2, 1).contiguous().view(NM * T_new, C)
-            k = x_future_pooled.permute(0, 2, 1).contiguous().view(NM * T_new, C)
-            # === 4. 归一化 & 梯度截断 ===
-            q = F.normalize(q, dim=1)
-            # [重要] detach k，保证 Backbone 专注于分类，不被预测任务带偏
-            k = F.normalize(k.detach(), dim=1)
-            # === 5. 计算相似度矩阵 (N*M*T, N*M*T) ===
-            # 这个矩阵自然包含了：
-            # - 对角线: 正样本 (Video_i_Frame_t vs Video_i_Frame_t)
-            # - 同Video不同Frame: 困难负样本 (DPC的核心)
-            # - 不同Video: 简单负样本
-            logits = torch.matmul(q, k.T)
-            # 温度系数 (DPC通常用较小的温度，但考虑到Batch大，建议 0.1)
-            logits /= self.arg.pred_temp
-            # === 6. 计算 Loss ===
-            # 标签是对角线
-            labels = torch.arange(logits.shape[0]).to(logits.device).long()
-            loss = F.cross_entropy(logits, labels)
-            # === 7. 自动数值平衡 ===
-            # 因为样本多了，Loss 数值会天然变大。除以 log(N) 将其拉回正常范围。
-            # 这样你就不用疯狂调小 pred_loss_weight 了。
-            pred_loss = loss / np.log(logits.shape[0])
         else:
             pred_loss = torch.tensor(0.0, device=x_pred.device)
         
@@ -514,7 +459,7 @@ class Processor():
             # 时序预测损失（仅当预测结果有效时计算）
             if x_pred is not None and x_future is not None:
                 pred_loss = self.compute_prediction_loss(x_pred, x_future)
-                loss = cls_loss + current_weight * pred_loss
+                loss = cls_loss + self.arg.pred_loss_weight * pred_loss
             else:
                 pred_loss = torch.tensor(0.0, device=data.device)
                 loss = cls_loss
@@ -640,12 +585,6 @@ class Processor():
             def count_parameters(model):
                 return sum(p.numel() for p in model.parameters() if p.requires_grad)
             self.print_log(f'# Parameters: {count_parameters(self.model)}')
-
-            # === [新增] 初始化早停变量 ===
-            early_stop_counter = 0
-            patience = 10  # 连续10轮没提升就停止
-            # ==========================
-
             for epoch in range(self.arg.start_epoch, self.arg.num_epoch):
                 save_model = (((epoch + 1) % self.arg.save_interval == 0) or (
                         epoch + 1 == self.arg.num_epoch)) and (epoch+1) > self.arg.save_epoch
@@ -653,26 +592,6 @@ class Processor():
                 self.train(epoch, save_model=save_model)
 
                 self.eval(epoch, save_score=self.arg.save_score, loader_name=['test'])
-
-                # === [新增] 早停逻辑 (限制在 65 轮后生效) ===
-                # 解释：你的 LR 在 55 轮衰减完毕。
-                # 我们从 65 轮开始监测，此时模型已经在最低 LR 下跑了 10 轮，状态应该很稳定了。
-                if epoch >= 65:
-                    # self.best_acc_epoch 记录的是“第几轮”(1-based)
-                    # epoch + 1 也是当前“第几轮”(1-based)
-                    if self.best_acc_epoch == epoch + 1:
-                        # 如果当前轮次就是最佳轮次（创新高），重置计数器
-                        early_stop_counter = 0
-                    else:
-                        # 没创新高，计数器+1
-                        early_stop_counter += 1
-                        print(f"EarlyStopping counter: {early_stop_counter} out of {patience}")
-
-                        if early_stop_counter >= patience:
-                            self.print_log(f"Early stopping at epoch {epoch + 1}")
-                            self.print_log(f"Best accuracy was at epoch {self.best_acc_epoch}")
-                            break
-                # ==========================================
 
             # test the best model
             print(self.arg.work_dir)
