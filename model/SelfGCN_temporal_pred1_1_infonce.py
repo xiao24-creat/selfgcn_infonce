@@ -162,11 +162,11 @@ class ModelWithTemporalPrediction(nn.Module):
 
                     # 预测
                     x_pred = self.temporal_pred(x_past_trim)
-                    x_future = x_future_trim
+                    x_future = x_future_trim.detach()
 
-                    # [可选] 对特征进行 L2 归一化，有助于 Cosine Loss 收敛   mse和smooth l1不需要这个
-                    x_pred = torch.nn.functional.normalize(x_pred, dim=1)
-                    x_future = torch.nn.functional.normalize(x_future, dim=1)
+                    # # [可选] 对特征进行 L2 归一化，有助于 Cosine Loss 收敛   mse不需要这个
+                    # x_pred = torch.nn.functional.normalize(x_pred, dim=1)
+                    # x_future = torch.nn.functional.normalize(x_future, dim=1)
             return cls_score, x_pred, x_future
         else:
             # 测试阶段或时间维度太短，不进行预测
