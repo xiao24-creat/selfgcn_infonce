@@ -593,6 +593,26 @@ class Processor():
 
                 self.eval(epoch, save_score=self.arg.save_score, loader_name=['test'])
 
+                # # === [新增] 早停逻辑 (限制在 65 轮后生效) ===
+                # # 解释：你的 LR 在 55 轮衰减完毕。
+                # # 我们从 65 轮开始监测，此时模型已经在最低 LR 下跑了 10 轮，状态应该很稳定了。
+                # if epoch >= 65:
+                #     # self.best_acc_epoch 记录的是“第几轮”(1-based)
+                #     # epoch + 1 也是当前“第几轮”(1-based)
+                #     if self.best_acc_epoch == epoch + 1:
+                #         # 如果当前轮次就是最佳轮次（创新高），重置计数器
+                #         early_stop_counter = 0
+                #     else:
+                #         # 没创新高，计数器+1
+                #         early_stop_counter += 1
+                #         print(f"EarlyStopping counter: {early_stop_counter} out of {patience}")
+                #
+                #         if early_stop_counter >= patience:
+                #             self.print_log(f"Early stopping at epoch {epoch + 1}")
+                #             self.print_log(f"Best accuracy was at epoch {self.best_acc_epoch}")
+                #             break
+                # # ==========================================
+
             # test the best model
             print(self.arg.work_dir)
             weights_path = glob.glob(os.path.join(self.arg.work_dir, 'runs-'+str(self.best_acc_epoch)+'*'))[0]
