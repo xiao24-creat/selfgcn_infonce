@@ -1,13 +1,6 @@
 """
 SelfGCN with Temporal Prediction Module
 在骨干网络l10层后提取特征，进行时序切分和预测
-
-`SelfGCN_temporal_pred1_1.py` (work_dir10)
-•  有预测模块 TemporalPredictionModule（3层卷积）
-•  单向预测：past → future
-•  固定gap=3
-•  这才是work_dir10实际使用的模型
-
 """
 import math
 import numpy as np
@@ -42,7 +35,7 @@ class TemporalPredictionModule(nn.Module):
             nn.Conv2d(hidden_channels, in_channels, kernel_size=(1, 1)),
             nn.BatchNorm2d(in_channels),
         )
-
+        
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 conv_init(m)
@@ -162,11 +155,11 @@ class ModelWithTemporalPrediction(nn.Module):
 
                     # 预测
                     x_pred = self.temporal_pred(x_past_trim)
-                    x_future = x_future_trim.detach()
+                    x_future = x_future_trim
 
-                    # # [可选] 对特征进行 L2 归一化，有助于 Cosine Loss 收敛   mse不需要这个
-                    # x_pred = torch.nn.functional.normalize(x_pred, dim=1)
-                    # x_future = torch.nn.functional.normalize(x_future, dim=1)
+                    # [可选] 对特征进行 L2 归一化，有助于 Cosine Loss 收敛
+                    x_pred = torch.nn.functional.normalize(x_pred, dim=1)
+                    x_future = torch.nn.functional.normalize(x_future, dim=1)
             return cls_score, x_pred, x_future
         else:
             # 测试阶段或时间维度太短，不进行预测
